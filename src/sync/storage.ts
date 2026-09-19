@@ -4,7 +4,8 @@ import type {Shape} from "../../shared/shape";
 /**
  * What survives a reload, in localStorage:
  *
- * - per tab: a client id (sessionStorage — two tabs are two clients);
+ * - per tab: a client id (sessionStorage, claimed with a lock — two tabs are
+ *   two clients, even when one started as a copy of the other);
  * - per tab and room: unsent changes and the change counter, so offline edits
  *   are not lost if the tab reloads before the connection comes back;
  * - per room: the last board seen, so a room opened offline is not blank.
@@ -36,14 +37,65 @@ export const randomId = (length = 12) => {
     return [...bytes].map((byte) => alphabet[byte % alphabet.length]).join("");
 };
 
-export const tabClientId = (): string => {
-    const key = "tessera:client";
-    const existing = read<string>(sessionStorage, key);
-    if (existing) return existing;
-    const id = randomId();
-    write(sessionStorage, key, id);
+const CLIENT_KEY = "tessera:client";
+/** How long a page waits for its inherited id when changes are queued under it; see `claimClientId`. */
+const RELOAD_PATIENCE_MS = 1_000;
+
+/**
+ * The id this page's changes carry. The room applies a change once per
+ * (client, number) and tells a returning client the last number it applied.
+ *
+ * It lives in sessionStorage so that a reloaded page is the same client and can
+ * resend whatever it never heard back about without anything applying twice.
+ * But browsers also copy sessionStorage into a window opened with `window.open`
+ * and into a duplicated tab, and two live pages under one id break the protocol
+ * from both ends: the room takes the changes of whichever page is behind in
+ * numbering for repeats and drops them, and each page takes the other's changes
+ * for echoes of its own and never draws them.
+ *
+ * So a page also holds a lock named after its id for as long as it lives. A
+ * reload finds the lock free — the page before let go of it on unloading — and
+ * keeps the id; a copy finds it held by the page it was copied from, and starts
+ * over as a new client.
+ */
+export const claimClientId = async (room: string): Promise<string> => {
+    const inherited = read<string>(sessionStorage, CLIENT_KEY);
+    // No Locks API outside a secure context: sessionStorage is all there is.
+    if (!navigator.locks) return inherited ?? newClientId();
+
+    if (inherited) {
+        // In practice the page before a reload has let go by the time the next
+        // one asks. If changes are queued under the id, give it a moment anyway
+        // rather than strand them under an id nobody uses any more.
+        const patience = loadPending(room, inherited).changes.length > 0 ? RELOAD_PATIENCE_MS : 0;
+        if (await holdClientId(inherited, patience)) return inherited;
+    }
+    const id = newClientId();
+    await holdClientId(id, 0);
     return id;
 };
+
+const newClientId = () => {
+    const id = randomId();
+    write(sessionStorage, CLIENT_KEY, id);
+    return id;
+};
+
+/**
+ * Takes the lock named after a client id if it is free, or comes free within
+ * `patience` ms, and holds it until the page is closed, reloaded or crashes.
+ */
+const holdClientId = (id: string, patience: number): Promise<boolean> =>
+    new Promise((resolve) => {
+        const options: LockOptions = patience > 0 ? {signal: AbortSignal.timeout(patience)} : {ifAvailable: true};
+        navigator.locks
+            .request(`tessera:client:${id}`, options, (lock) => {
+                resolve(lock !== null);
+                // A promise that never settles keeps the lock for the page's lifetime.
+                return lock ? new Promise<never>(() => {}) : undefined;
+            })
+            .catch(() => resolve(false)); // the patience ran out, or this page may not take locks
+    });
 
 interface PendingRecord {
     counter: number;

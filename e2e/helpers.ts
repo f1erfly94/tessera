@@ -11,6 +11,7 @@ interface TestWindow {
         shapes: readonly Shape[];
         manualOffline: boolean;
         sync: {
+            clientId: string;
             view: Map<string, Shape>;
             pendingCount: number;
             peers: Map<string, {name: string; cursor: [number, number] | null}>;
@@ -43,6 +44,15 @@ export const selection = (page: Page) =>
 
 export const pendingCount = (page: Page) =>
     page.evaluate(() => (window as unknown as TestWindow).__tessera.sync.pendingCount);
+
+export const clientId = (page: Page) => page.evaluate(() => (window as unknown as TestWindow).__tessera.sync.clientId);
+
+/** A window the page opens itself, once its board is live. */
+export const popup = async (page: Page, open: () => Promise<unknown>): Promise<Page> => {
+    const [opened] = await Promise.all([page.waitForEvent("popup"), open()]);
+    await waitOnline(opened);
+    return opened;
+};
 
 /** Screen position of a world point on this page's camera. */
 export const toScreen = (page: Page, x: number, y: number) =>

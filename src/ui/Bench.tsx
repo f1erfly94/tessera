@@ -62,7 +62,7 @@ const percentile = (values: number[], p: number) => {
 
 export const Bench = () => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const [editor] = useState(() => new Editor({room: "bench", local: true}));
+    const [editor] = useState(() => new Editor({room: "bench", client: "local", local: true}));
     const [count, setCount] = useState(SIZES[2]!);
     const [running, setRunning] = useState(false);
     const [results, setResults] = useState<Result[]>([]);

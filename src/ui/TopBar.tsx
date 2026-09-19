@@ -170,7 +170,9 @@ export const TopBar = ({editor, onCopied}: {editor: Editor; onCopied: () => void
                     type="button"
                     className="text-button"
                     title="Open this board in a second window, side by side"
-                    onClick={() => window.open(location.href, "_blank", "popup,width=960,height=720")}
+                    // noopener: the new window starts with storage of its own
+                    // instead of a copy of this one's, client id included.
+                    onClick={() => window.open(location.href, "_blank", "popup,noopener,width=960,height=720")}
                 >
                     <WindowIcon />
                     Second window

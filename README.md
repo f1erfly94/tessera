@@ -50,6 +50,14 @@ the shape jump back and forth. See [`src/sync/sync-client.ts`](src/sync/sync-cli
 last number it applied per client and says so when a client reconnects, so nothing is applied twice
 and nothing already applied is re-sent.
 
+That makes the client id load-bearing: it must belong to exactly one live tab. A tab keeps its id
+across reloads in `sessionStorage` — which browsers also copy into a duplicated tab and into a window
+the page opens, and two tabs under one id lose edits both ways: the room drops one tab's changes as
+repeats of the other's, and each tab takes the other's changes for echoes of its own. The first
+version's own **Second window** button did exactly that. Now every tab also holds a Web Lock named
+after its id for as long as it lives; a copy finds the lock taken and becomes a client of its own
+([`src/sync/storage.ts`](src/sync/storage.ts)).
+
 **Offline is not a special mode.** While disconnected, changes queue exactly as they do online — they
 are also written to `localStorage`, so a reload keeps them — and go out on reconnect. The server's
 ordering then does the merging; no extra merge logic exists.
@@ -82,8 +90,9 @@ applied at all.
 The end-to-end suite ([`e2e/`](e2e)) runs against the real stack — the Worker and its Durable Objects
 in workerd — and every test drives **two browsers**: a shape and a cursor crossing between them, a
 recolour and a move of the same shape merging after one side was offline, offline edits surviving a
-reload, undo leaving the other person's work alone, sticky-note text appearing as it is typed, and a
-raw socket sending impersonated and malformed changes that the room turns away.
+reload, undo leaving the other person's work alone, sticky-note text appearing as it is typed, a
+second window and a copied tab each drawing as a person of their own, and a raw socket sending
+impersonated and malformed changes that the room turns away.
 
 ## Rendering
 

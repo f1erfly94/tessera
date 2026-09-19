@@ -11,7 +11,6 @@ import {
     saveIdentity,
     savePending,
     saveSnapshot,
-    tabClientId,
 } from "../sync/storage";
 import {type DocChange, SyncClient} from "../sync/sync-client";
 import {
@@ -81,6 +80,8 @@ interface Action {
 
 export interface EditorOptions {
     room: string;
+    /** What this page's changes are known by: see `claimClientId`. */
+    client: string;
     /** No server and no storage: the benchmark page. */
     local?: boolean;
 }
@@ -158,7 +159,7 @@ export class Editor {
         this.local = options.local ?? false;
         this.identity = this.local ? {name: "You", color: "#4263eb"} : loadIdentity();
 
-        const clientId = this.local ? "local" : tabClientId();
+        const clientId = options.client;
         const saved = this.local ? {counter: 0, changes: []} : loadPending(this.room, clientId);
 
         this.sync = new SyncClient(

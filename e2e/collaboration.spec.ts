@@ -1,11 +1,13 @@
-import {expect, test} from "@playwright/test";
+import {expect, type Page, test} from "@playwright/test";
 
 import {
+    clientId,
     dragShape,
     draw,
     expectSameBoard,
     join,
     pendingCount,
+    popup,
     selection,
     setOffline,
     shape,
@@ -25,6 +27,41 @@ test("a shape drawn by one person appears for the other, with their cursor", asy
         .poll(() => bob.evaluate(() => [...(window as never as {__tessera: {sync: {peers: Map<string, {cursor: unknown}>}}}).__tessera.sync.peers.values()].some((peer) => peer.cursor !== null)))
         .toBe(true);
     await expect(bob.getByRole("list", {name: "2 people here"})).toBeVisible();
+});
+
+// Two windows of one browser share storage, so each must still be its own
+// client: under one id the room drops one window's changes as repeats of the
+// other's, and each window takes the other's changes for echoes of its own.
+const drawBothWays = async (a: Page, b: Page) => {
+    // `draw` takes the first shape it had not seen for the one it drew, so each
+    // side draws only once the other's shape has arrived.
+    const rect = await draw(a, "r", {x: 450, y: 450}, {x: 600, y: 560});
+    await expect.poll(async () => (await shape(b, rect))?.type).toBe("rect");
+    const ellipse = await draw(b, "o", {x: 450, y: 600}, {x: 600, y: 700});
+    await expect.poll(async () => (await shape(a, ellipse))?.type).toBe("ellipse");
+    await expectSameBoard(a, b);
+};
+
+test("the second window is a second person, drawing both ways", async ({browser}) => {
+    const first = await join(browser);
+    const second = await popup(first, () => first.getByRole("button", {name: "Second window"}).click());
+    expect(await clientId(second)).not.toBe(await clientId(first));
+    await drawBothWays(first, second);
+});
+
+test("a copy of a tab becomes a client of its own", async ({browser}) => {
+    // What "Duplicate tab" does: a new page that starts with a copy of this one's
+    // sessionStorage, while this one is still open.
+    const original = await join(browser);
+    const copy = await popup(original, () => original.evaluate(() => void window.open(location.href)));
+    expect(await clientId(copy)).not.toBe(await clientId(original));
+    await drawBothWays(original, copy);
+
+    // A reload is the same tab again: it keeps its id.
+    const before = await clientId(copy);
+    await copy.reload();
+    await waitOnline(copy);
+    expect(await clientId(copy)).toBe(before);
 });
 
 test("two people changing different properties of one shape both win", async ({browser}) => {

@@ -48,10 +48,10 @@ const CanvasLayer = ({editor}: {editor: Editor}) => {
     );
 };
 
-export const Board = ({room}: {room: string}) => {
+export const Board = ({room, client}: {room: string; client: string}) => {
     // Constructing an editor has no side effects; the socket opens in the effect
     // below, so the double mount React does in development never opens two.
-    const [editor] = useState(() => new Editor({room}));
+    const [editor] = useState(() => new Editor({room, client}));
     const [helpOpen, setHelpOpen] = useState(false);
     const [notice, setNotice] = useState<string | null>(null);
 
