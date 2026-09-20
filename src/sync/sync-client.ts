@@ -1,6 +1,7 @@
 import {applyChange, applyOp, type Change, type Doc, type Op, opTarget} from "../../shared/doc";
-import {type ClientMessage, type Peer, PROTOCOL_VERSION, type ServerMessage} from "../../shared/protocol";
+import {type ClientMessage, MAX_MESSAGE_CHARS, type Peer, PROTOCOL_VERSION, type ServerMessage} from "../../shared/protocol";
 import type {Shape, ShapePatch, ShapeProp} from "../../shared/shape";
+import {LIMITS} from "../../shared/validate";
 
 /**
  * The client half of synchronisation, with no socket in it.
@@ -42,6 +43,32 @@ export interface SyncEvents {
 }
 
 type Mask = Map<ShapeProp | "*", number>;
+
+/** What a change costs on the wire besides its operations: near enough for a budget. */
+const ENVELOPE_CHARS = 128;
+
+/** Whether the room would take these operations as one change. */
+const fits = (ops: Op[]): boolean =>
+    ops.length <= LIMITS.opsPerChange && JSON.stringify(ops).length + ENVELOPE_CHARS <= MAX_MESSAGE_CHARS;
+
+/** The same operations in the same order, in as few batches as the room's limits allow. */
+const split = (ops: Op[]): Op[][] => {
+    const batches: Op[][] = [];
+    let batch: Op[] = [];
+    let chars = ENVELOPE_CHARS;
+    for (const op of ops) {
+        const size = JSON.stringify(op).length + 1;
+        if (batch.length > 0 && (batch.length >= LIMITS.opsPerChange || chars + size > MAX_MESSAGE_CHARS)) {
+            batches.push(batch);
+            batch = [];
+            chars = ENVELOPE_CHARS;
+        }
+        batch.push(op);
+        chars += size;
+    }
+    if (batch.length > 0) batches.push(batch);
+    return batches;
+};
 
 export class SyncClient {
     readonly clientId: string;
@@ -123,11 +150,31 @@ export class SyncClient {
         this.events.pending?.(this.pending, this.counter);
     }
 
-    /** Sends every queued change that has not gone out on this connection yet. */
+    /**
+     * Sends every queued change that has not gone out on this connection yet.
+     *
+     * A change that carries more than the room takes — a thousand shapes moved
+     * at once, a paste of a whole board — is divided here rather than refused
+     * there: the same operations in the same order, across several changes.
+     * Other people then see one huge edit arrive in a few parts, which is the
+     * price of it arriving at all. Splitting at this point and not at the edit
+     * itself keeps a drag one coalescing change, however many shapes it moves.
+     */
     flush(): void {
         if (!this.transport || !this.synced) return;
         while (this.sent < this.pending.length) {
-            this.transport({type: "change", change: this.pending[this.sent]!});
+            const change = this.pending[this.sent]!;
+            if (!fits(change.ops)) {
+                if (change.ops.length > 1) {
+                    this.divide(this.sent);
+                    continue;
+                }
+                // One operation no room will ever take. Sent, it would cost the
+                // socket and come back on the next connection, for ever.
+                this.reject(this.sent, "Part of that edit was too big for the board, so it has been undone.");
+                continue;
+            }
+            this.transport({type: "change", change});
             this.sent++;
         }
         this.openKey = null;
@@ -208,13 +255,8 @@ export class SyncClient {
 
             case "reject": {
                 const index = this.pending.findIndex((change) => change.n === message.n);
-                if (index !== -1) {
-                    this.pending.splice(index, 1);
-                    if (index < this.sent) this.sent--;
-                    this.rebuildView();
-                    this.events.pending?.(this.pending, this.counter);
-                }
-                this.events.rejected?.(message.reason);
+                if (index === -1) this.events.rejected?.(message.reason);
+                else this.reject(index, message.reason);
                 return;
             }
 
@@ -239,6 +281,30 @@ export class SyncClient {
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
+
+    /** Takes a refused change out of the queue and off the view, and says why. */
+    private reject(index: number, reason: string): void {
+        this.pending.splice(index, 1);
+        if (index < this.sent) this.sent--;
+        this.rebuildView();
+        this.events.pending?.(this.pending, this.counter);
+        this.events.rejected?.(reason);
+    }
+
+    /**
+     * Replaces the change at `index` with as many as it takes to fit, and
+     * renumbers everything queued behind it: none of that has been sent, so
+     * those numbers are still ours to hand out, and they must stay in order —
+     * the room applies a change of ours only if its number is higher than the
+     * last one it applied. The masks count operations rather than changes, so
+     * dividing one leaves them as they are.
+     */
+    private divide(index: number): void {
+        const queued = this.pending.splice(index, this.pending.length - index);
+        const batches = queued.flatMap((change, position) => (position === 0 ? split(change.ops) : [change.ops]));
+        for (const ops of batches) this.pending.push({client: this.clientId, n: ++this.counter, ops});
+        this.events.pending?.(this.pending, this.counter);
+    }
 
     /** Drops every pending change up to and including `n`: the server has it. */
     private acknowledge(n: number): void {

@@ -1,5 +1,6 @@
 import {useEffect, useRef, useState} from "react";
 
+import {LIMITS} from "../../shared/validate";
 import type {Editor} from "../editor/editor";
 import {worldToScreen} from "../editor/geometry";
 import {NOTE_FONT} from "../editor/render";
@@ -38,7 +39,9 @@ export const NoteEditor = ({editor}: {editor: Editor}) => {
             className="note-editor"
             aria-label="Note text"
             value={text}
-            maxLength={2000}
+            // The room refuses a longer note, so the typing stops here rather
+            // than in a change that could never be applied.
+            maxLength={LIMITS.text}
             spellCheck
             style={{
                 left: topLeft.x,

@@ -3,6 +3,7 @@ import {describe, expect, it} from "vitest";
 import type {Op} from "../../shared/doc";
 import type {ClientMessage, ServerMessage} from "../../shared/protocol";
 import type {Shape} from "../../shared/shape";
+import {LIMITS} from "../../shared/validate";
 import {SyncClient} from "./sync-client";
 
 const rect = (id: string, x = 0): Shape => ({
@@ -111,6 +112,54 @@ describe("SyncClient", () => {
         client.receive(remote(5, 1, [{t: "delete", id: "x"}]));
         expect(resyncs).toBe(1);
         expect(client.seq).toBe(3);
+    });
+
+    it("divides an edit the room would refuse, and keeps its order", () => {
+        const {client, sent} = connectedClient();
+        const ops: Op[] = Array.from({length: 1_200}, (_, index) => ({t: "create", shape: rect(`s${index}`, index)}));
+        client.commit(ops);
+        client.flush();
+
+        const changes = sent.flatMap((message) => (message.type === "change" ? [message.change] : []));
+        expect(changes.length).toBeGreaterThan(1);
+        expect(Math.max(...changes.map((change) => change.ops.length))).toBeLessThanOrEqual(LIMITS.opsPerChange);
+        expect(changes.flatMap((change) => change.ops)).toEqual(ops); // every operation, still in order
+        expect(changes.map((change) => change.n)).toEqual([...changes.map((change) => change.n)].sort((a, b) => a - b));
+        expect(client.view.size).toBe(1_200);
+    });
+
+    it("still merges a drag of many shapes into one change until it is sent", () => {
+        const {client, sent} = connectedClient(Array.from({length: 600}, (_, index) => rect(`s${index}`)));
+        for (let x = 1; x <= 20; x++) {
+            client.commit(
+                Array.from({length: 600}, (_, index): Op => ({t: "update", id: `s${index}`, patch: {x}})),
+                "drag",
+            );
+        }
+        client.flush();
+
+        // Two messages because 600 operations do not fit in one, not forty.
+        const changes = sent.filter((message) => message.type === "change");
+        expect(changes).toHaveLength(2);
+        expect(client.view.get("s0")?.x).toBe(20);
+    });
+
+    it("drops a single operation too big to ever send, and says so", () => {
+        const reasons: string[] = [];
+        const client = new SyncClient({clientId: "me", name: "Me", color: "#123456"}, {rejected: (reason) => reasons.push(reason)});
+        const sent: ClientMessage[] = [];
+        client.connected((message) => sent.push(message));
+        client.receive({type: "welcome", seq: 0, lastApplied: 0, you: "p1", peers: []});
+
+        client.commit([{t: "create", shape: {...rect("huge"), text: "x".repeat(600_000)}}]);
+        client.commit([{t: "create", shape: rect("fine")}]);
+        client.flush();
+
+        expect(sent.filter((message) => message.type === "change")).toHaveLength(1); // only the one that fits
+        expect(client.view.has("huge")).toBe(false);
+        expect(client.view.has("fine")).toBe(true);
+        expect(client.pendingCount).toBe(1);
+        expect(reasons).toHaveLength(1);
     });
 
     it("never reuses a change number after a reload", () => {

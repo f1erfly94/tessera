@@ -10,6 +10,9 @@ export const PROTOCOL_VERSION = 1;
 
 export const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{6,32}$/;
 
+/** The most characters one message may carry; a bigger one costs the sender its socket. */
+export const MAX_MESSAGE_CHARS = 512 * 1024;
+
 /** Someone else in the room, as the others see them. */
 export interface Peer {
     /** One per connection: the same person in two tabs is two peers. */
@@ -25,6 +28,17 @@ export type ClientMessage =
     | {type: "hello"; v: number; client: string; name: string; color: string}
     | {type: "change"; change: Change}
     | {type: "presence"; cursor: [number, number] | null; selection: string[]};
+
+/**
+ * A change the room will not take, whose envelope still says which change it is.
+ * That number is the difference between an answer its author can act on — a
+ * `reject` it rolls back — and a nameless error it can only ignore, which would
+ * leave the change queued as though it were still on its way.
+ */
+export interface BadChange {
+    type: "bad-change";
+    n: number;
+}
 
 export type ServerMessage =
     /** The board arrives in parts so no single message grows with the room. */
@@ -55,8 +69,12 @@ const parseCursor = (value: unknown): [number, number] | null | undefined => {
     return undefined;
 };
 
-/** Parses and validates a raw client message; anything malformed comes back as null. */
-export const parseClientMessage = (raw: string): ClientMessage | null => {
+/**
+ * Parses and validates a raw client message. A change whose contents do not
+ * pass comes back as a `bad-change` carrying its number; anything else
+ * malformed comes back as null.
+ */
+export const parseClientMessage = (raw: string): ClientMessage | BadChange | null => {
     let value: unknown;
     try {
         value = JSON.parse(raw);
@@ -77,7 +95,9 @@ export const parseClientMessage = (raw: string): ClientMessage | null => {
         }
         case "change": {
             const change = parseChange(message.change);
-            return change ? {type: "change", change} : null;
+            if (change) return {type: "change", change};
+            const n = typeof message.change === "object" && message.change !== null ? (message.change as {n?: unknown}).n : undefined;
+            return typeof n === "number" && Number.isSafeInteger(n) && n >= 1 ? {type: "bad-change", n} : null;
         }
         case "presence": {
             const cursor = parseCursor(message.cursor);

@@ -14,7 +14,7 @@ test("the room refuses malformed, oversized and impersonated changes", async ({b
     const replies = await page.evaluate(async () => {
         const room = location.pathname.split("/")[2];
         const socket = new WebSocket(`ws://${location.host}/api/rooms/${room}/ws`);
-        const received: {type: string; message?: string; n?: number}[] = [];
+        const received: {type: string; message?: string; n?: number; reason?: string}[] = [];
         socket.addEventListener("message", (event) => received.push(JSON.parse(event.data as string)));
         await new Promise((resolve) => socket.addEventListener("open", resolve));
 
@@ -30,15 +30,18 @@ test("the room refuses malformed, oversized and impersonated changes", async ({b
         socket.send("not json at all");
         await new Promise((resolve) => setTimeout(resolve, 500));
         socket.close();
-        return received.filter((message) => message.type === "error").map((message) => message.message);
+        return received.filter((message) => message.type === "error" || message.type === "reject");
     });
 
+    // A change it can name, the room refuses by number — that is what lets an
+    // author take a refused change back instead of queueing it for ever. Only
+    // what cannot be read at all comes back as a nameless error.
     expect(replies).toEqual([
-        "Change from an unknown client.",
-        "Malformed message.",
-        "Malformed message.",
-        "Malformed message.",
-        "Malformed message.",
+        {type: "error", message: "Change from an unknown client."},
+        {type: "reject", n: 1, reason: "The board could not accept that change."},
+        {type: "reject", n: 1, reason: "The board could not accept that change."},
+        {type: "reject", n: 1, reason: "The board could not accept that change."},
+        {type: "error", message: "Malformed message."},
     ]);
     // Nothing reached the board.
     await page.waitForTimeout(300);

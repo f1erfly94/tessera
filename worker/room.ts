@@ -1,6 +1,6 @@
 import {DurableObject} from "cloudflare:workers";
 
-import {parseClientMessage, type Peer, type ServerMessage} from "../shared/protocol";
+import {MAX_MESSAGE_CHARS, parseClientMessage, type Peer, type ServerMessage} from "../shared/protocol";
 import {RoomCore} from "../shared/room-core";
 import {handleChange, welcomeMessages} from "../shared/room-server";
 import type {Shape} from "../shared/shape";
@@ -20,7 +20,6 @@ const FLUSH_DELAY_MS = 1_000;
 /** A room nobody has opened for this long is deleted. */
 const IDLE_ROOM_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_CONNECTIONS = 50;
-const MAX_MESSAGE_CHARS = 512 * 1024;
 /** Token bucket per socket: bursts of 240 messages, 120 a second sustained. */
 const RATE_CAPACITY = 240;
 const RATE_PER_SECOND = 120;
@@ -93,13 +92,25 @@ export class Room extends DurableObject<Env> {
     async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
         if (typeof raw !== "string") return this.send(ws, {type: "error", message: "Binary messages are not supported."});
         if (raw.length > MAX_MESSAGE_CHARS) return ws.close(1009, "Message too big");
-        if (!this.allow(ws)) return this.send(ws, {type: "error", message: "Too many messages — slow down."});
 
         const message = parseClientMessage(raw);
         if (!message) return this.send(ws, {type: "error", message: "Malformed message."});
+
+        // Whatever happens to a change is answered by its number, so its author
+        // can take it back. An error it cannot match to a change it would only
+        // ignore, and go on showing an edit nobody else will ever see.
+        const refused = message.type === "change" ? message.change.n : message.type === "bad-change" ? message.n : null;
+        if (!this.allow(ws)) {
+            return refused === null
+                ? this.send(ws, {type: "error", message: "Too many messages — slow down."})
+                : this.send(ws, {type: "reject", n: refused, reason: "Too many changes at once — that one was not saved."});
+        }
         const attachment = ws.deserializeAttachment() as Attachment;
 
         switch (message.type) {
+            case "bad-change":
+                return this.send(ws, {type: "reject", n: message.n, reason: "The board could not accept that change."});
+
             case "hello": {
                 attachment.client = message.client;
                 attachment.name = message.name;

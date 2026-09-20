@@ -153,6 +153,7 @@ export class Editor {
     private toastTimer: ReturnType<typeof setTimeout> | null = null;
     private snapshotTimer: ReturnType<typeof setTimeout> | null = null;
     private pendingTimer: ReturnType<typeof setTimeout> | null = null;
+    private presenceTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(options: EditorOptions) {
         this.room = options.room;
@@ -214,6 +215,8 @@ export class Editor {
         for (const cleanup of this.connectionCleanups.splice(0)) cleanup();
         if (this.pendingTimer) clearTimeout(this.pendingTimer);
         this.pendingTimer = null;
+        if (this.presenceTimer) clearTimeout(this.presenceTimer);
+        this.presenceTimer = null;
         this.persistPending();
     }
 
@@ -906,7 +909,7 @@ export class Editor {
             this.requestRender();
         }
         this.lastCursor = null;
-        this.sync.sendPresence(null, [...this.selection]);
+        this.sendPresence();
     }
 
     // ── Keyboard ─────────────────────────────────────────────────────────────
@@ -1046,16 +1049,32 @@ export class Editor {
 
     private setSelection(selection: Set<string>) {
         this.selection = selection;
-        this.sync.sendPresence(this.lastCursor, [...selection]);
+        this.sendPresence();
         this.emit();
         this.requestRender();
     }
 
     private sendCursor(world: Point) {
         this.lastCursor = [Math.round(world.x), Math.round(world.y)];
-        const now = performance.now();
-        if (now - this.lastPresence < PRESENCE_INTERVAL_MS) return;
-        this.lastPresence = now;
+        this.sendPresence();
+    }
+
+    /**
+     * Where this person is and what they have selected, at most every
+     * PRESENCE_INTERVAL_MS — but never only half told: what is skipped now goes
+     * out when the window opens. A marquee changes the selection on every frame
+     * of the drag, and the room counts messages per socket.
+     */
+    private sendPresence() {
+        const wait = PRESENCE_INTERVAL_MS - (performance.now() - this.lastPresence);
+        if (wait > 0) {
+            this.presenceTimer ??= setTimeout(() => {
+                this.presenceTimer = null;
+                this.sendPresence();
+            }, wait);
+            return;
+        }
+        this.lastPresence = performance.now();
         this.sync.sendPresence(this.lastCursor, [...this.selection]);
     }
 

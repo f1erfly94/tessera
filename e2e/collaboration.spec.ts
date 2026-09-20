@@ -1,6 +1,7 @@
 import {expect, type Page, test} from "@playwright/test";
 
 import {
+    addRectangles,
     clientId,
     dragShape,
     draw,
@@ -131,6 +132,51 @@ test("changes made offline survive a reload", async ({browser}) => {
 
     await expect.poll(async () => (await shape(bob, id))?.type).toBe("rect");
     await expectSameBoard(alice, bob);
+});
+
+test("an edit too big for one message still arrives whole", async ({browser}) => {
+    const alice = await join(browser);
+    const bob = await join(browser, alice.url());
+    const start = (await shapes(bob)).length;
+
+    await addRectangles(alice, 1_200);
+    await expect.poll(async () => (await shapes(bob)).length, {timeout: 20_000}).toBe(start + 1_200);
+    await expect.poll(() => pendingCount(alice)).toBe(0);
+
+    // The same size of edit again, as one update per shape: select all, nudge.
+    await alice.keyboard.press("Control+a");
+    await alice.keyboard.press("ArrowRight");
+    await expect.poll(async () => (await shape(bob, "bulk7"))?.x, {timeout: 20_000}).toBe(7 * 4 + 1);
+    await expectSameBoard(alice, bob);
+});
+
+test("a marquee drag does not flood the room with presence", async ({browser}) => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    let presence = 0;
+    page.on("websocket", (socket) =>
+        socket.on("framesent", (frame) => {
+            if (frame.payload.toString().includes('"presence"')) presence++;
+        }),
+    );
+    await page.goto("/");
+    await waitOnline(page);
+
+    // A marquee changes the selection on every frame of the drag, and the room
+    // counts messages per socket: they have to be throttled on the way out.
+    await page.keyboard.press("v");
+    await page.mouse.move(200, 200);
+    await page.mouse.down();
+    const started = Date.now();
+    for (let step = 1; step <= 30; step++) {
+        await page.mouse.move(200 + step * 20, 200 + step * 10);
+        await page.waitForTimeout(20);
+    }
+    await page.mouse.up();
+    const elapsed = Date.now() - started;
+
+    expect(presence).toBeGreaterThan(1); // still saying where we are
+    expect(presence).toBeLessThanOrEqual(Math.ceil(elapsed / 50) + 3); // PRESENCE_INTERVAL_MS, plus slack
 });
 
 test("a sticky note's text is typed live into the other browser", async ({browser}) => {

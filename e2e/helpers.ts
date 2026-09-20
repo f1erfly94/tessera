@@ -1,5 +1,6 @@
 import {type Browser, expect, type Page} from "@playwright/test";
 
+import type {Op} from "../shared/doc";
 import type {Shape} from "../shared/shape";
 
 /** What the tests read from the page: the editor that development builds expose. */
@@ -15,6 +16,7 @@ interface TestWindow {
             view: Map<string, Shape>;
             pendingCount: number;
             peers: Map<string, {name: string; cursor: [number, number] | null}>;
+            commit: (ops: Op[]) => void;
         };
     };
 }
@@ -46,6 +48,20 @@ export const pendingCount = (page: Page) =>
     page.evaluate(() => (window as unknown as TestWindow).__tessera.sync.pendingCount);
 
 export const clientId = (page: Page) => page.evaluate(() => (window as unknown as TestWindow).__tessera.sync.clientId);
+
+/**
+ * Puts `count` rectangles on the board as one edit — far more operations than
+ * the room takes in a single change. Drawing that many by hand would take the
+ * test minutes; what is under test is what the editor does with the edit.
+ */
+export const addRectangles = (page: Page, count: number) =>
+    page.evaluate((many) => {
+        const ops = Array.from({length: many}, (_, index) => ({
+            t: "create" as const,
+            shape: {id: `bulk${index}`, type: "rect" as const, x: index * 4, y: 0, w: 3, h: 3, stroke: "#1e1e1e", fill: null, strokeWidth: 2, z: "a0"},
+        }));
+        (window as unknown as TestWindow).__tessera.sync.commit(ops);
+    }, count);
 
 /** A window the page opens itself, once its board is live. */
 export const popup = async (page: Page, open: () => Promise<unknown>): Promise<Page> => {
